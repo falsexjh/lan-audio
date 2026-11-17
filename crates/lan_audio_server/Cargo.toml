@@ -27,6 +27,9 @@ uuid.workspace = true
 default = []
 real-opus = []
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",

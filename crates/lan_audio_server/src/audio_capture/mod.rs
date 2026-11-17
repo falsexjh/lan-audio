@@ -20,6 +20,8 @@ use thiserror::Error;
 use tokio::time::{sleep_until, Instant};
 
 pub mod pcm_accumulator;
+mod recovery;
+pub use recovery::RecoveringAudioSource;
 
 #[cfg(target_os = "windows")]
 #[path = "windows_loopback_windows.rs"]

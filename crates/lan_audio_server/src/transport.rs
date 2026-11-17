@@ -21,7 +21,8 @@ use uuid::Uuid;
 use crate::adaptive_runtime::{tier_encoder_profile, AdaptiveRuntime, TierEncoderProfile};
 use crate::audio_capture::{
     AudioCaptureSource, AudioFormat, AudioFrame, CaptureDebugDumpConfig, CaptureError,
-    CaptureSourceState, PacketKind, SyntheticAudioSource, WindowsLoopbackCapture,
+    CaptureSourceState, PacketKind, RecoveringAudioSource, SyntheticAudioSource,
+    WindowsLoopbackCapture,
 };
 use crate::config::{
     AudioSourceKind, CodecSelection, DataPlaneFormat, ServerConfig, SyntheticSignalKind,
@@ -1281,7 +1282,7 @@ impl UdpTransport {
             },
         )
         .map_err(|err: CaptureError| anyhow!(err.to_string()))?;
-        Ok(Box::new(source))
+        Ok(Box::new(RecoveringAudioSource::new(Box::new(source))))
     }
 }
 

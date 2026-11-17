@@ -38,6 +38,9 @@ jobs:
             . -> target
             apps/desktop/src-tauri -> target
 
+      - name: Test capture recovery and protocol
+        run: cargo test --locked -p lan_audio_server -p lan_audio_protocol --lib
+
       - name: Build Windows Client (Release EXE)
         run: cargo build --release -p lan_audio_desktop
 
