@@ -15,6 +15,10 @@ struct DecoderHandle {
     OpusDecoder *decoder = nullptr;
     int sample_rate = 0;
     int channels = 0;
+    // Kotlin serializes access to this handle. Retain scratch capacity across
+    // frames instead of allocating encoded and decoded vectors on every call.
+    std::vector<unsigned char> encoded;
+    std::vector<opus_int16> decoded;
 };
 
 struct EncoderHandle {
@@ -101,16 +105,17 @@ Java_com_example_lan_1audio_1android_1mvp_OpusNativeDecoder_nativeDecode(
     if (handle == nullptr || handle->decoder == nullptr) {
         return throw_illegal_state(env, "opus decoder is closed");
     }
-    if (pcm_out == nullptr || offset < 0 || length < 0 || max_frames <= 0) {
+    if (pcm_out == nullptr || offset < 0 || length < 0 || max_frames <= 0 ||
+        max_frames > handle->sample_rate * 120 / 1000) {
         return throw_illegal_state(env, "invalid opus decode input");
     }
 
     const jsize out_size = env->GetArrayLength(pcm_out);
-    if (out_size < max_frames * handle->channels) {
+    if (max_frames > out_size / handle->channels) {
         return throw_illegal_state(env, "opus pcm output buffer is too small");
     }
 
-    std::vector<unsigned char> encoded;
+    auto &encoded = handle->encoded;
     const unsigned char *encoded_ptr = nullptr;
     int encoded_length = 0;
     if (!use_plc) {
@@ -118,10 +123,12 @@ Java_com_example_lan_1audio_1android_1mvp_OpusNativeDecoder_nativeDecode(
             return throw_illegal_state(env, "opus packet is required when PLC is disabled");
         }
         const jsize packet_size = env->GetArrayLength(packet);
-        if (offset + length > packet_size) {
+        if (offset > packet_size || length > packet_size - offset) {
             return throw_illegal_state(env, "opus packet range is out of bounds");
         }
-        encoded.resize(static_cast<size_t>(length));
+        if (encoded.size() < static_cast<size_t>(length)) {
+            encoded.resize(static_cast<size_t>(length));
+        }
         env->GetByteArrayRegion(packet, offset, length, reinterpret_cast<jbyte *>(encoded.data()));
         if (env->ExceptionCheck()) {
             return -1;
@@ -130,7 +137,11 @@ Java_com_example_lan_1audio_1android_1mvp_OpusNativeDecoder_nativeDecode(
         encoded_length = length;
     }
 
-    std::vector<opus_int16> decoded(static_cast<size_t>(max_frames * handle->channels));
+    auto &decoded = handle->decoded;
+    const auto required_samples = static_cast<size_t>(max_frames * handle->channels);
+    if (decoded.size() < required_samples) {
+        decoded.resize(required_samples);
+    }
     const int frames = opus_decode(
         handle->decoder,
         encoded_ptr,

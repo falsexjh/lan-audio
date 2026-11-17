@@ -2,53 +2,47 @@ package com.example.lan_audio_android_mvp
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import io.flutter.plugin.common.EventChannel
 
 object PlaybackEventBus {
-    private val lock = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var sink: EventChannel.EventSink? = null
-    private var latest: Map<String, Any?> = PlaybackSnapshot().toStableServiceSnapshot().toMap()
+    private val updates = LatestValueDispatcher(
+        initial = PlaybackSnapshot(), intervalMs = 250L,
+        clockMs = SystemClock::elapsedRealtime,
+        post = { task, delay -> mainHandler.postDelayed(task, delay); Unit },
+        cancel = { task -> mainHandler.removeCallbacks(task) },
+        urgent = ::playbackPresentationChanged,
+    )
 
     fun attachSink(eventSink: EventChannel.EventSink) {
-        val snapshot: Map<String, Any?>
-        synchronized(lock) {
-            sink = eventSink
-            snapshot = latest
-        }
-        dispatchOnMainThread(eventSink, snapshot)
-    }
-
-    fun detachSink() {
-        synchronized(lock) {
-            sink = null
-        }
-    }
-
-    fun publish(snapshot: PlaybackSnapshot) {
-        val payload = snapshot.toStableServiceSnapshot().toMap()
-        val currentSink: EventChannel.EventSink?
-        synchronized(lock) {
-            latest = payload
-            currentSink = sink
-        }
-        if (currentSink != null) {
-            dispatchOnMainThread(currentSink, payload)
-        }
-    }
-
-    fun snapshotMap(): Map<String, Any?> {
-        synchronized(lock) {
-            return latest
-        }
-    }
-
-    private fun dispatchOnMainThread(targetSink: EventChannel.EventSink, payload: Map<String, Any?>) {
-        mainHandler.post {
+        updates.attach { snapshot ->
             try {
-                targetSink.success(payload)
+                eventSink.success(snapshot.toStableServiceSnapshot().toMap())
             } catch (_: Throwable) {
             }
         }
     }
+
+    fun detachSink() {
+        updates.detach()
+    }
+
+    fun publish(snapshot: PlaybackSnapshot) {
+        updates.publish(snapshot)
+    }
+
+    fun snapshotMap(): Map<String, Any?> {
+        return updates.current().toStableServiceSnapshot().toMap()
+    }
 }
+
+// Metrics can wait; connection, playback and user controls are immediate.
+internal fun playbackPresentationChanged(previous: PlaybackSnapshot, next: PlaybackSnapshot): Boolean =
+    previous.serviceState != next.serviceState || previous.connectionState != next.connectionState ||
+        previous.playbackState != next.playbackState || previous.targetHost != next.targetHost ||
+        previous.targetName != next.targetName || previous.currentAudioMode != next.currentAudioMode ||
+        previous.modeProfile != next.modeProfile || previous.effectiveCodec != next.effectiveCodec ||
+        previous.protocolPath != next.protocolPath || previous.playbackBackend != next.playbackBackend ||
+        previous.eqSettings != next.eqSettings ||
+        previous.loudnessNormalizationEnabled != next.loudnessNormalizationEnabled || previous.error != next.error

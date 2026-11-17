@@ -13,6 +13,8 @@ import 'audio/las_packet.dart';
 import 'connect_history.dart';
 import 'services/mic_capture_service.dart';
 import 'ui/audio_console_status.dart';
+import 'ui/playback_ui_selector.dart';
+import 'ui/metrics_formatter.dart';
 import 'ui/audio_console_theme.dart';
 import 'ui/pages/connect_page.dart';
 import 'ui/pages/more_page.dart';
@@ -177,7 +179,7 @@ class MainShell extends StatefulWidget {
 /// Keep legacy name as alias for smoke tests that reference DebugPage.
 typedef DebugPage = MainShell;
 
-class _MainShellState extends State<MainShell> {
+class _MainShellState extends State<MainShell> with WidgetsBindingObserver {
   static const MethodChannel _platformChannel =
       MethodChannel('lan_audio/platform');
 
@@ -206,9 +208,14 @@ class _MainShellState extends State<MainShell> {
   Timer? _nsdPollTimer;
   Timer? _discoveryTimeoutTimer;
   StreamSubscription<PlaybackServiceSnapshot>? _serviceEventsSub;
+  bool _playbackUiVisible = true;
 
   String _status = 'idle';
   String _wsLog = '';
+  PlaybackServiceSnapshot? _latestServiceSnapshot;
+  final PlaybackUiSelector _playbackUiSelector = PlaybackUiSelector();
+  final ValueNotifier<String> _playbackMetricsText = ValueNotifier('');
+  final ValueNotifier<int> _networkQualityValue = ValueNotifier(0);
   String? _selectedServerId;
   ConnectMode _connectMode = ConnectMode.discovered;
   bool _isConnecting = false;
@@ -286,6 +293,7 @@ class _MainShellState extends State<MainShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final sysLang =
         PlatformDispatcher.instance.locale.languageCode.toLowerCase();
     _lang = sysLang.startsWith('zh') ? AppLang.zh : AppLang.en;
@@ -298,12 +306,7 @@ class _MainShellState extends State<MainShell> {
     if (kUseBackgroundPlaybackService) {
       debugPrint(
           'ui_init background playback service enabled; attach events/getSnapshot/setOptions');
-      _serviceEventsSub =
-          _backgroundService.events().listen(_onPlaybackServiceEvent);
-      _backgroundService
-          .getSnapshot()
-          .then(_onPlaybackServiceEvent)
-          .catchError((_) {});
+      _attachPlaybackServiceEvents();
       _backgroundService
           .setOptions(startBufferMs: 60, maxBufferMs: 300, pingIntervalMs: 1000)
           .catchError((_) {});
@@ -313,6 +316,26 @@ class _MainShellState extends State<MainShell> {
       _maybeOpenPowerGuideFromIntent();
     });
     _scheduleSilentUpdateCheck();
+  }
+
+  void _attachPlaybackServiceEvents() {
+    if (!mounted || !_playbackUiVisible || _serviceEventsSub != null) return;
+    _serviceEventsSub = _backgroundService.events().listen(_onPlaybackServiceEvent);
+    _backgroundService.getSnapshot().then(_onPlaybackServiceEvent).catchError((_) {});
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _playbackUiVisible = state == AppLifecycleState.resumed;
+    if (!kUseBackgroundPlaybackService) return;
+    if (_playbackUiVisible) {
+      _attachPlaybackServiceEvents();
+    } else {
+      // Cancel rather than pause, so the native EventChannel stops producing.
+      final subscription = _serviceEventsSub;
+      _serviceEventsSub = null;
+      subscription?.cancel();
+    }
   }
 
   bool get _isZh => _lang == AppLang.zh;
@@ -459,7 +482,7 @@ class _MainShellState extends State<MainShell> {
   bool _isRecentHost(String host) => _recentConnectedHosts.containsKey(host);
 
   void _onPlaybackServiceEvent(PlaybackServiceSnapshot snapshot) {
-    if (!mounted) {
+    if (!mounted || !_playbackUiVisible) {
       return;
     }
     final metrics = snapshot.metrics;
@@ -467,97 +490,98 @@ class _MainShellState extends State<MainShell> {
     final newWsConnected = runtimeState != 'disconnected' && runtimeState != 'closed';
     // Detect connection state transitions for SnackBar (Feature 6)
     final previousConnected = _lastWsConnectedForSnackbar;
-    setState(() {
-      _sampleRate = (metrics['sample_rate'] as num?)?.toInt() ?? _sampleRate;
-      _channels = (metrics['channels'] as num?)?.toInt() ?? _channels;
-      _serviceBufferedMs =
-          (metrics['buffered_ms'] as num?)?.toInt() ?? _serviceBufferedMs;
-      _serviceJitterBufferedMs =
-          (metrics['jitter_buffered_ms'] as num?)?.toInt() ??
-              _serviceJitterBufferedMs;
-      _serviceTrackQueuedMs =
-          (metrics['audio_track_queued_ms'] as num?)?.toInt() ??
-              _serviceTrackQueuedMs;
-      _serviceUnderrun =
-          (metrics['underrun'] as num?)?.toInt() ?? _serviceUnderrun;
-      _serviceDropped =
-          (metrics['dropped_packets'] as num?)?.toInt() ?? _serviceDropped;
-      _serviceLate = (metrics['late_packets'] as num?)?.toInt() ?? _serviceLate;
-      _serviceFloorHoldCount = (metrics['floor_hold_count'] as num?)?.toInt() ??
-          _serviceFloorHoldCount;
-      _serviceUdpPackets =
-          (metrics['udp_packets'] as num?)?.toInt() ?? _serviceUdpPackets;
-      _serviceUdpBytes =
-          (metrics['udp_bytes'] as num?)?.toInt() ?? _serviceUdpBytes;
-      _serviceLoss =
-          (metrics['loss_estimate'] as num?)?.toInt() ?? _serviceLoss;
-      _serviceLastSeq =
-          (metrics['last_seq'] as num?)?.toInt() ?? _serviceLastSeq;
-      _serviceAudioTrackLatencyMs =
-          (metrics['audio_track_latency_ms'] as num?)?.toInt() ??
-              _serviceAudioTrackLatencyMs;
-      _currentAudioMode = _audioModeFromWire(snapshot.mode);
-      _protocolVersion = snapshot.protocolVersion ??
-          (snapshot.dataPlane == 'v2_header' ? 2 : 1);
-      _negotiatedCapabilities = snapshot.negotiatedCapabilities;
-      _serverPlatform = snapshot.serverPlatform;
-      _serverAppVersion = snapshot.serverAppVersion;
-      _modeProfile = snapshot.modeProfile;
-      _connectionPath =
-          snapshot.transport == 'usb' ? 'usb_localhost' : 'lan_ip_wifi_or_usb';
-      _transportMode = snapshot.transportMode;
-      _connectedClientCount = snapshot.connectedClientCount;
-      _protocolPath = snapshot.dataPlane;
-      _playbackBackend = snapshot.playbackBackend;
-      _effectiveCodec = snapshot.effectiveCodec;
-      _eqEnabled = snapshot.eqEnabled;
-      _eqLowDb = (snapshot.eqSettings['low_db'] as num?)?.toInt() ??
-          (snapshot.eqSettings['lowDb'] as num?)?.toInt() ??
-          _eqLowDb;
-      _eqMidDb = (snapshot.eqSettings['mid_db'] as num?)?.toInt() ??
-          (snapshot.eqSettings['midDb'] as num?)?.toInt() ??
-          _eqMidDb;
-      _eqHighDb = (snapshot.eqSettings['high_db'] as num?)?.toInt() ??
-          (snapshot.eqSettings['highDb'] as num?)?.toInt() ??
-          _eqHighDb;
-      _loudnessNormalizationEnabled = snapshot.loudnessNormalizationEnabled;
-      _loudnessGainDb =
-          (metrics['loudness_gain_db'] as num?)?.toDouble() ?? _loudnessGainDb;
-      _reconnectAttempts = snapshot.reconnectAttempts;
-      _reconnectDelayMs = snapshot.reconnectDelayMs;
-      _experimentalPath = snapshot.dataPlane == 'v2_header';
-      _tcpRoundTripMs = (metrics['rtt_ms'] as num?)?.toInt();
-      _tcpRoundTripMedianMs = _tcpRoundTripMs;
-      _serviceJitterP95Ms =
-          (metrics['jitter_p95_ms'] as num?)?.toInt() ?? _serviceJitterP95Ms;
+    final rebuildControls = _playbackUiSelector.accept(snapshot);
+    _latestServiceSnapshot = snapshot;
+    _sampleRate = (metrics['sample_rate'] as num?)?.toInt() ?? _sampleRate;
+    _channels = (metrics['channels'] as num?)?.toInt() ?? _channels;
+    _serviceBufferedMs =
+        (metrics['buffered_ms'] as num?)?.toInt() ?? _serviceBufferedMs;
+    _serviceJitterBufferedMs =
+        (metrics['jitter_buffered_ms'] as num?)?.toInt() ??
+            _serviceJitterBufferedMs;
+    _serviceTrackQueuedMs =
+        (metrics['audio_track_queued_ms'] as num?)?.toInt() ??
+            _serviceTrackQueuedMs;
+    _serviceUnderrun =
+        (metrics['underrun'] as num?)?.toInt() ?? _serviceUnderrun;
+    _serviceDropped =
+        (metrics['dropped_packets'] as num?)?.toInt() ?? _serviceDropped;
+    _serviceLate = (metrics['late_packets'] as num?)?.toInt() ?? _serviceLate;
+    _serviceFloorHoldCount = (metrics['floor_hold_count'] as num?)?.toInt() ??
+        _serviceFloorHoldCount;
+    _serviceUdpPackets =
+        (metrics['udp_packets'] as num?)?.toInt() ?? _serviceUdpPackets;
+    _serviceUdpBytes =
+        (metrics['udp_bytes'] as num?)?.toInt() ?? _serviceUdpBytes;
+    _serviceLoss =
+        (metrics['loss_estimate'] as num?)?.toInt() ?? _serviceLoss;
+    _serviceLastSeq =
+        (metrics['last_seq'] as num?)?.toInt() ?? _serviceLastSeq;
+    _serviceAudioTrackLatencyMs =
+        (metrics['audio_track_latency_ms'] as num?)?.toInt() ??
+            _serviceAudioTrackLatencyMs;
+    _currentAudioMode = _audioModeFromWire(snapshot.mode);
+    _protocolVersion = snapshot.protocolVersion ??
+        (snapshot.dataPlane == 'v2_header' ? 2 : 1);
+    _negotiatedCapabilities = snapshot.negotiatedCapabilities;
+    _serverPlatform = snapshot.serverPlatform;
+    _serverAppVersion = snapshot.serverAppVersion;
+    _modeProfile = snapshot.modeProfile;
+    _connectionPath =
+        snapshot.transport == 'usb' ? 'usb_localhost' : 'lan_ip_wifi_or_usb';
+    _transportMode = snapshot.transportMode;
+    _connectedClientCount = snapshot.connectedClientCount;
+    _protocolPath = snapshot.dataPlane;
+    _playbackBackend = snapshot.playbackBackend;
+    _effectiveCodec = snapshot.effectiveCodec;
+    _eqEnabled = snapshot.eqEnabled;
+    _eqLowDb = (snapshot.eqSettings['low_db'] as num?)?.toInt() ??
+        (snapshot.eqSettings['lowDb'] as num?)?.toInt() ??
+        _eqLowDb;
+    _eqMidDb = (snapshot.eqSettings['mid_db'] as num?)?.toInt() ??
+        (snapshot.eqSettings['midDb'] as num?)?.toInt() ??
+        _eqMidDb;
+    _eqHighDb = (snapshot.eqSettings['high_db'] as num?)?.toInt() ??
+        (snapshot.eqSettings['highDb'] as num?)?.toInt() ??
+        _eqHighDb;
+    _loudnessNormalizationEnabled = snapshot.loudnessNormalizationEnabled;
+    _loudnessGainDb =
+        (metrics['loudness_gain_db'] as num?)?.toDouble() ?? _loudnessGainDb;
+    _reconnectAttempts = snapshot.reconnectAttempts;
+    _reconnectDelayMs = snapshot.reconnectDelayMs;
+    _experimentalPath = snapshot.dataPlane == 'v2_header';
+    _tcpRoundTripMs = (metrics['rtt_ms'] as num?)?.toInt();
+    _tcpRoundTripMedianMs = _tcpRoundTripMs;
+    _serviceJitterP95Ms =
+        (metrics['jitter_p95_ms'] as num?)?.toInt() ?? _serviceJitterP95Ms;
 
-      if (runtimeState == 'streaming') {
-        _playbackState = PlaybackState.playing;
-      } else if (runtimeState == 'handshaking' ||
-          runtimeState == 'negotiated' ||
-          runtimeState == 'reconfiguring' ||
-          runtimeState == 'recovering') {
-        _playbackState = PlaybackState.buffering;
-      } else {
-        _playbackState = PlaybackState.stopped;
-      }
+    if (runtimeState == 'streaming') {
+      _playbackState = PlaybackState.playing;
+    } else if (runtimeState == 'handshaking' ||
+        runtimeState == 'negotiated' ||
+        runtimeState == 'reconfiguring' ||
+        runtimeState == 'recovering') {
+      _playbackState = PlaybackState.buffering;
+    } else {
+      _playbackState = PlaybackState.stopped;
+    }
 
-      _wsConnected = runtimeState != 'disconnected' && runtimeState != 'closed';
-      _lastWsConnectedForSnackbar = _wsConnected;
+    _wsConnected = runtimeState != 'disconnected' && runtimeState != 'closed';
+    _lastWsConnectedForSnackbar = _wsConnected;
 
-      // Recover server name from connect history when the background service
-      // is already streaming but the UI was restarted (cold start reconnect).
-      if (_wsConnected && _serviceTargetName == null && _connectHistory.isNotEmpty) {
-        final recent = _connectHistory.first;
-        _serviceTargetHost = recent.ip;
-        _serviceTargetName = recent.hostname;
-      }
+    // Recover server name from connect history when the background service
+    // is already streaming but the UI was restarted (cold start reconnect).
+    if (_wsConnected && _serviceTargetName == null && _connectHistory.isNotEmpty) {
+      final recent = _connectHistory.first;
+      _serviceTargetHost = recent.ip;
+      _serviceTargetName = recent.hostname;
+    }
 
-      _status = runtimeState == 'recovering'
-          ? '${tr('重新连接中', 'Reconnecting')}... (${tr('第', '#')} $_reconnectAttempts${tr('次', '')}, ${_reconnectDelayMs}ms)'
-          : '${snapshot.state}/${snapshot.rollbackState}';
-      _wsLog = jsonEncode(snapshot.toMap());
-    });
+    _status = runtimeState == 'recovering'
+        ? '${tr('重新连接中', 'Reconnecting')}... (${tr('第', '#')} $_reconnectAttempts${tr('次', '')}, ${_reconnectDelayMs}ms)'
+        : '${snapshot.state}/${snapshot.rollbackState}';
+    _publishPlaybackMetrics();
+    if (rebuildControls) setState(() {});
     // Feature 6: Connection status SnackBar
     if (newWsConnected && !previousConnected) {
       final name = _serviceTargetName ?? _serviceTargetHost ?? '';
@@ -575,6 +599,17 @@ class _MainShellState extends State<MainShell> {
         ),
       );
     }
+  }
+
+  void _publishPlaybackMetrics() {
+    if (!_playbackUiVisible || _currentTabIndex != 0) return;
+    _playbackMetricsText.value = formatMetricsLine(
+      bufferMs: int.tryParse(_metricBufferText) ?? 0,
+      underrunCount: _uiUnderrun,
+      rttMs: _tcpRoundTripMs,
+      lossPercent: _lossPercent,
+    );
+    _networkQualityValue.value = _networkQuality;
   }
 
   /// Dedupe across discovery sources (mDNS / UDP beacon / probe scan).
@@ -940,6 +975,7 @@ class _MainShellState extends State<MainShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (kUseBackgroundPlaybackService) {
       debugPrint(
           'ui_dispose detach only; background playback service is not stopped by UI dispose');
@@ -960,6 +996,8 @@ class _MainShellState extends State<MainShell> {
     _platformChannel.invokeMethod('stopNsdDiscovery').catchError((_) {});
     _releaseMulticastLock();
     _manualHostController.dispose();
+    _playbackMetricsText.dispose();
+    _networkQualityValue.dispose();
     super.dispose();
   }
 
@@ -1941,7 +1979,7 @@ class _MainShellState extends State<MainShell> {
                 onAutoConnectChanged: _setAutoConnectEnabled,
                 audioFocusExclusive: _audioFocusExclusive,
                 onAudioFocusChanged: _setAudioFocusExclusive,
-                debugData: _buildDebugData(),
+                debugDataBuilder: _buildDebugData,
               ),
             ],
           ),
@@ -1981,7 +2019,12 @@ class _MainShellState extends State<MainShell> {
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentTabIndex,
-        onTap: (index) => setState(() => _currentTabIndex = index),
+        onTap: (index) {
+          if (index == _currentTabIndex) return;
+          _currentTabIndex = index;
+          _publishPlaybackMetrics();
+          setState(() {});
+        },
         backgroundColor: AudioConsoleColors.navBackground,
         selectedItemColor: AudioConsoleColors.navActive,
         unselectedItemColor: AudioConsoleColors.navInactive,
@@ -2034,6 +2077,9 @@ class _MainShellState extends State<MainShell> {
       lossPercent: _lossPercent,
       isBluetoothOutput: _isBluetoothOutput,
       networkQuality: _networkQuality,
+      metricsTextListenable: kUseBackgroundPlaybackService ? _playbackMetricsText : null,
+      networkQualityListenable: kUseBackgroundPlaybackService ? _networkQualityValue : null,
+      chartActive: _currentTabIndex == 0,
     );
   }
 
@@ -2080,7 +2126,7 @@ class _MainShellState extends State<MainShell> {
       'TCP RTT': _tcpRoundTripMs == null
           ? '-'
           : '$_tcpRoundTripMs ms / $_tcpRoundTripMedianMs ms (med)',
-      'wsLog': _wsLog,
+      'wsLog': _latestServiceSnapshot == null ? _wsLog : jsonEncode(_latestServiceSnapshot!.toMap()),
       'negotiatedCapabilities': _negotiatedCapabilities.toString(),
       'modeProfile': _modeProfile.toString(),
       'connectActionLabel': _connectActionLabel(),

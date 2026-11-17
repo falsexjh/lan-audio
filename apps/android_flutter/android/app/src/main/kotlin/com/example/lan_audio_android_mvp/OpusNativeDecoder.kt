@@ -1,8 +1,6 @@
 package com.example.lan_audio_android_mvp
 
 import android.util.Log
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlin.math.abs
 
 class OpusNativeDecoder(
@@ -11,6 +9,9 @@ class OpusNativeDecoder(
 ) {
     private val logTag = "lan_audio_opus_jni"
     private var handle: Long = 0
+    // Decoder calls and release are synchronized; this scratch buffer is never
+    // handed to the jitter queue, which owns each returned ByteArray.
+    private var pcmBuffer = ShortArray(0)
 
     init {
         check(isAvailable()) { "libopus JNI decoder is not available" }
@@ -24,7 +25,12 @@ class OpusNativeDecoder(
     fun decodeToPcmBytes(packet: ByteArray, expectedFrames: Int, usePlc: Boolean = false): ByteArray? {
         check(handle != 0L) { "libopus decoder is closed" }
         val maxFrames = expectedFrames.coerceAtLeast(1)
-        val pcm = ShortArray(maxFrames * channels.coerceAtLeast(1))
+        require(maxFrames <= sampleRate * 120 / 1000) { "Opus frame exceeds 120 ms" }
+        val requiredSamples = maxFrames * channels
+        if (pcmBuffer.size < requiredSamples) {
+            pcmBuffer = ShortArray(requiredSamples)
+        }
+        val pcm = pcmBuffer
         val frames = nativeDecode(handle, packet, 0, packet.size, pcm, maxFrames, usePlc)
         if (frames < 0) {
             Log.w(logTag, "libopus decode failed code=$frames")
@@ -35,13 +41,7 @@ class OpusNativeDecoder(
         }
 
         val samples = frames * channels
-        val out = ByteBuffer
-            .allocate(samples * 2)
-            .order(ByteOrder.LITTLE_ENDIAN)
-        for (idx in 0 until samples) {
-            out.putShort(pcm[idx])
-        }
-        return out.array()
+        return pcm16LittleEndian(pcm, samples)
     }
 
     @Synchronized
@@ -72,6 +72,17 @@ class OpusNativeDecoder(
         private const val TAG = "lan_audio_opus_jni"
         private var libraryLoadAttempted = false
         private var libraryLoaded = false
+
+        internal fun pcm16LittleEndian(pcm: ShortArray, samples: Int): ByteArray {
+            require(samples in 0..pcm.size && samples <= Int.MAX_VALUE / 2)
+            val out = ByteArray(samples * 2)
+            for (idx in 0 until samples) {
+                val sample = pcm[idx].toInt()
+                out[idx * 2] = sample.toByte()
+                out[idx * 2 + 1] = (sample shr 8).toByte()
+            }
+            return out
+        }
 
         @Synchronized
         fun isAvailable(): Boolean {

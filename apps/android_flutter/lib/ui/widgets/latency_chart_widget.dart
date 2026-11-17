@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show listEquals;
 
 import '../audio_console_theme.dart';
 
@@ -23,6 +24,7 @@ class LatencyChartWidget extends StatefulWidget {
     this.refreshInterval = const Duration(milliseconds: 500),
     this.windowSeconds = 60,
     this.height = 100,
+    this.active = true,
   });
 
   /// Live current latency snapshot (in ms).
@@ -35,14 +37,22 @@ class LatencyChartWidget extends StatefulWidget {
   final Duration refreshInterval;
   final int windowSeconds;
   final double height;
+  final bool active;
 
   @override
   State<LatencyChartWidget> createState() => _LatencyChartWidgetState();
 }
 
-class _LatencyChartWidgetState extends State<LatencyChartWidget> {
-  late final int _maxSamples;
-  late final List<double> _current;
+class _LatencyChartWidgetState extends State<LatencyChartWidget>
+    with WidgetsBindingObserver {
+  int get _maxSamples =>
+      ((widget.windowSeconds * 1000) ~/
+              widget.refreshInterval.inMilliseconds.clamp(1, 5000))
+          .clamp(2, 10000).toInt();
+  final List<double> _current = [];
+  List<double> _paintSamples = const [];
+  bool _visible = true;
+  bool _tickersEnabled = true;
   double _lastBaseline = 0;
   double _lastCurrent = 0;
   Timer? _timer;
@@ -50,14 +60,46 @@ class _LatencyChartWidgetState extends State<LatencyChartWidget> {
   @override
   void initState() {
     super.initState();
-    _maxSamples = (widget.windowSeconds * 1000) ~/
-        widget.refreshInterval.inMilliseconds.clamp(1, 5000);
-    _current = <double>[];
-    _timer = Timer.periodic(widget.refreshInterval, (_) => _sample());
+    WidgetsBinding.instance.addObserver(this);
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    _visible = lifecycle == null || lifecycle == AppLifecycleState.resumed;
+  }
+
+  void _syncTimer() {
+    if (!widget.active || !_visible || !_tickersEnabled) {
+      _timer?.cancel();
+      _timer = null;
+    } else {
+      _timer ??= Timer.periodic(widget.refreshInterval, (_) => _sample());
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _tickersEnabled = TickerMode.of(context);
+    _syncTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant LatencyChartWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.refreshInterval != widget.refreshInterval) {
+      _timer?.cancel();
+      _timer = null;
+    }
+    _syncTimer();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _visible = state == AppLifecycleState.resumed;
+    _syncTimer();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
     super.dispose();
   }
@@ -66,14 +108,21 @@ class _LatencyChartWidgetState extends State<LatencyChartWidget> {
     if (!mounted) return;
     final cur = widget.currentLatencyMs();
     final base = widget.baselineLatencyMs();
+    final baseline = base != null && base.isFinite ? base : _lastBaseline;
+    final value = cur ?? (_current.isNotEmpty ? _current.last : 0.0);
+    final current = value.isFinite ? value : 0.0;
+    _current.add(current);
+    while (_current.length > _maxSamples) {
+      _current.removeAt(0);
+    }
+    if (baseline == _lastBaseline &&
+        current == _lastCurrent &&
+        listEquals(_paintSamples, _current))
+      return;
     setState(() {
-      if (base != null && base.isFinite) _lastBaseline = base;
-      final v = cur ?? (_current.isNotEmpty ? _current.last : 0.0);
-      _lastCurrent = v.isFinite ? v : 0.0;
-      _current.add(_lastCurrent);
-      while (_current.length > _maxSamples) {
-        _current.removeAt(0);
-      }
+      _lastBaseline = baseline;
+      _lastCurrent = current;
+      _paintSamples = List<double>.unmodifiable(_current);
     });
   }
 
@@ -81,69 +130,70 @@ class _LatencyChartWidgetState extends State<LatencyChartWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final currentText = _lastCurrent > 0
-        ? '${_lastCurrent.round()}ms'
-        : '--';
+    final currentText = _lastCurrent > 0 ? '${_lastCurrent.round()}ms' : '--';
 
-    return Container(
-      height: widget.height,
-      decoration: BoxDecoration(
-        color: AudioConsoleColors.bg2,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AudioConsoleColors.border),
-      ),
-      padding: const EdgeInsets.fromLTRB(6, 8, 10, 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    tr('延迟', 'Latency'),
-                    style: AudioConsoleType.caption(
-                      color: AudioConsoleColors.text2,
+    return RepaintBoundary(
+      child: Container(
+        height: widget.height,
+        decoration: BoxDecoration(
+          color: AudioConsoleColors.bg2,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AudioConsoleColors.border),
+        ),
+        padding: const EdgeInsets.fromLTRB(6, 8, 10, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      tr('延迟', 'Latency'),
+                      style: AudioConsoleType.caption(
+                        color: AudioConsoleColors.text2,
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  _LegendDot(
-                    color: AudioConsoleColors.teal,
-                    label: tr('当前', 'Now'),
-                  ),
-                  const SizedBox(width: 10),
-                  _LegendDot(
-                    color: const Color(0xFF60A5FA),
-                    label: tr('基线', 'Base'),
-                    dashed: true,
-                  ),
-                ],
-              ),
-              Text(
-                currentText,
-                style: TextStyle(
-                  fontFamily: AudioConsoleType.monoFamily,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AudioConsoleColors.teal,
+                    const SizedBox(width: 10),
+                    _LegendDot(
+                      color: AudioConsoleColors.teal,
+                      label: tr('当前', 'Now'),
+                    ),
+                    const SizedBox(width: 10),
+                    _LegendDot(
+                      color: const Color(0xFF60A5FA),
+                      label: tr('基线', 'Base'),
+                      dashed: true,
+                    ),
+                  ],
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Expanded(
-            child: CustomPaint(
-              painter: _LatencyAreaPainter(
-                current: List<double>.unmodifiable(_current),
-                baseline: _lastBaseline,
-                maxSamples: _maxSamples,
-              ),
-              size: Size.infinite,
+                Text(
+                  currentText,
+                  style: TextStyle(
+                    fontFamily: AudioConsoleType.monoFamily,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AudioConsoleColors.teal,
+                  ),
+                ),
+              ],
             ),
-          ),
-        ],
+            const SizedBox(height: 4),
+            Expanded(
+              child: CustomPaint(
+                key: const ValueKey('latency-series'),
+                painter: _LatencyAreaPainter(
+                  current: _paintSamples,
+                  baseline: _lastBaseline,
+                  maxSamples: _maxSamples,
+                ),
+                size: Size.infinite,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -178,10 +228,7 @@ class _LegendDot extends StatelessWidget {
               color: color,
               shape: BoxShape.circle,
               boxShadow: [
-                BoxShadow(
-                  color: color.withValues(alpha: 0.5),
-                  blurRadius: 3,
-                ),
+                BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 3),
               ],
             ),
           ),
@@ -209,8 +256,16 @@ class _DashLinePainter extends CustomPainter {
       ..color = color
       ..strokeWidth = 1.5
       ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(0, size.height / 2), Offset(3, size.height / 2), paint);
-    canvas.drawLine(Offset(5.5, size.height / 2), Offset(size.width, size.height / 2), paint);
+    canvas.drawLine(
+      Offset(0, size.height / 2),
+      Offset(3, size.height / 2),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(5.5, size.height / 2),
+      Offset(size.width, size.height / 2),
+      paint,
+    );
   }
 
   @override
@@ -377,11 +432,7 @@ class _LatencyAreaPainter extends CustomPainter {
     // Draw a small dot at the latest point.
     if (points.isNotEmpty) {
       final last = points.last;
-      canvas.drawCircle(
-        last,
-        2.5,
-        Paint()..color = currentColor,
-      );
+      canvas.drawCircle(last, 2.5, Paint()..color = currentColor);
       canvas.drawCircle(
         last,
         2.5,
@@ -427,7 +478,6 @@ class _LatencyAreaPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LatencyAreaPainter oldDelegate) {
-    return oldDelegate.current != current ||
-        oldDelegate.baseline != baseline;
+    return oldDelegate.current != current || oldDelegate.baseline != baseline;
   }
 }

@@ -83,6 +83,9 @@ class PlaybackSessionRuntime(
     private var lastPacketArrivalUs = 0L
     private var expectedArrivalUs = 0L
     private var jitterP50Us = 0
+    private val jitterDisplayGate = IntervalGate(250L)
+    private var displayJitterHistory: List<Int> = emptyList()
+    private var displayJitterP50Us = 0
     private var adaptiveStableSinceMs: Long = 0
     private var lastDecodeSummaryAtMs: Long = 0
     private var lastRxSeqRaw: Int? = null
@@ -645,6 +648,10 @@ class PlaybackSessionRuntime(
         lastSeq = playbackPacket.sequence.toLong() and 0xFFFFFFFFL
         jitterBuffer.push(playbackPacket)
 
+        if (jitterDisplayGate.shouldRun(SystemClock.elapsedRealtime())) {
+            displayJitterHistory = computeJitterHistory()
+            displayJitterP50Us = computeJitterP50()
+        }
         val stats = jitterBuffer.stats
         val jitterBufferedMs = jitterBuffer.bufferedMs()
         val metricsSnapshot = stateStore.current().metrics
@@ -670,8 +677,8 @@ class PlaybackSessionRuntime(
                     cfgChangedCount = cfgChangedCount,
                     discontinuityCount = discontinuityCount,
                     jitterP95Ms = jitterP95Ms,
-                    jitterHistoryUs = computeJitterHistory(),
-                    jitterP50Us = computeJitterP50(),
+                    jitterHistoryUs = displayJitterHistory,
+                    jitterP50Us = displayJitterP50Us,
                     floorHoldCount = stats.floorHoldCount,
                     reconnectCount = reconnectTotalCount,
                     decodeErrors = decodeErrorTotal,
@@ -1944,6 +1951,8 @@ class PlaybackSessionRuntime(
 
     private fun maybeLogMetrics(force: Boolean = false, reason: String = "periodic") {
         val now = SystemClock.elapsedRealtime()
+        // Do not query JNI/sink statistics for a log that will be discarded.
+        if (!force && lastMetricsLogAtMs != 0L && now - lastMetricsLogAtMs < 1000L) return
         val snapshot = stateStore.current()
         val metrics = snapshot.metrics
         val sinkStats = withPlaybackSinkLock { playbackSink.stats() }

@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <ctime>
 #include <cstring>
 
 namespace {
@@ -363,25 +362,9 @@ oboe::DataCallbackResult OboeAudioSink::onAudioReady(
         std::memset(out + got_samples, 0, static_cast<size_t>(missing_frames * channels) * sizeof(int16_t));
         silence_fill_count_.fetch_add(1, std::memory_order_relaxed);
     }
-    const auto cb = callback_count_.fetch_add(1, std::memory_order_relaxed) + 1;
-    timespec now_ts{};
-    clock_gettime(CLOCK_MONOTONIC, &now_ts);
-    const uint64_t now_ns =
-        static_cast<uint64_t>(now_ts.tv_sec) * 1000000000ULL + static_cast<uint64_t>(now_ts.tv_nsec);
-    const uint64_t prev_ns = last_callback_log_ns_.load(std::memory_order_relaxed);
-    if (prev_ns == 0 || now_ns - prev_ns >= 1000000000ULL) {
-        last_callback_log_ns_.store(now_ns, std::memory_order_relaxed);
-        const int available_frames = ring_buffer_.availableFrames();
-        __android_log_print(
-            ANDROID_LOG_INFO,
-            kTag,
-            "callback_sample callback=%llu available_frames=%d requested_frames=%d pulled_frames=%d silence_total=%d",
-            static_cast<unsigned long long>(cb),
-            available_frames,
-            requested_frames,
-            got_frames,
-            silence_fill_count_.load(std::memory_order_relaxed));
-    }
+    // Keep realtime work bounded. The Kotlin sink already reports queue,
+    // silence-fill and underrun counters in its periodic oboe_summary.
+    callback_count_.fetch_add(1, std::memory_order_relaxed);
     return oboe::DataCallbackResult::Continue;
 }
 

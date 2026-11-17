@@ -5,6 +5,7 @@ plugins {
 }
 
 def localProperties = new Properties()
+def isPerfBuild = (project.findProperty('lanAudioPerfBuild') ?: System.getenv('LAN_AUDIO_PERF_BUILD') ?: 'false').toString().toBoolean()
 def localPropertiesFile = rootProject.file('local.properties')
 if (localPropertiesFile.exists()) {
     localPropertiesFile.withReader('UTF-8') { reader ->
@@ -21,8 +22,9 @@ android {
         applicationId 'com.example.lan_audio_android_mvp'
         minSdkVersion 24
         targetSdkVersion flutter.targetSdkVersion
-        versionCode flutter.versionCode
+        versionCode flutter.versionCode + (isPerfBuild ? 2 : 0)
         versionName flutter.versionName
+        manifestPlaceholders = [appLabel: isPerfBuild ? 'LAN Audio Perf' : 'LAN Audio']
     }
 
     externalNativeBuild {
@@ -76,7 +78,20 @@ android {
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            signingConfig(isPerfBuild ? signingConfigs.debug : signingConfigs.release)
+            if (isPerfBuild) {
+                applicationIdSuffix '.perf'
+                versionNameSuffix '-perf3'
+                // Flutter's default native filters include all supported ABIs.
+                // Keep JNI libraries aligned with the selected Flutter engine.
+                def abiMap = ['android-arm': 'armeabi-v7a', 'android-arm64': 'arm64-v8a', 'android-x64': 'x86_64']
+                ndk.abiFilters.clear()
+                providers.gradleProperty('target-platform').getOrElse('android-arm64').split(',').each { platform ->
+                    def abi = abiMap[platform]
+                    if (abi == null) { throw new GradleException("Unsupported test APK platform: $platform") }
+                    ndk.abiFilters.add(abi)
+                }
+            }
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -89,6 +104,7 @@ flutter {
 }
 
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
     implementation "androidx.core:core:1.13.1"
     implementation "androidx.media:media:1.7.0"
     implementation "androidx.media3:media3-session:1.4.1"

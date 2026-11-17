@@ -195,7 +195,11 @@ class OboeAudioTrackController : PlaybackAudioSink {
         return ((frames.coerceAtLeast(0).toLong() * 1000L) / sampleRate.coerceAtLeast(1).toLong()).toInt()
     }
 
+    private val pcmLevelGate = IntervalGate(250L)
+
     private fun updatePcmLevel(data: ByteArray) {
+        // Peak/RMS are diagnostics; they never control audio output.
+        if (!pcmLevelGate.shouldRun(SystemClock.elapsedRealtime())) return
         if (data.size < 2) {
             lastPcmPeak = 0
             lastPcmRms = 0.0

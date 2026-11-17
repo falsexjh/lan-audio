@@ -37,37 +37,38 @@ data class LasPacket(
 }
 
 object LasPacketParser {
-    fun parse(bytes: ByteArray): LasPacket? {
-        if (bytes.size < 4) {
+    // The receive buffer may be reused immediately after this call. Only the
+    // payload is copied, so packets retained by the jitter buffer stay owned.
+    fun parse(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size - offset): LasPacket? {
+        if (offset < 0 || length < 4 || offset > bytes.size || length > bytes.size - offset) {
             return null
         }
-        val magic = String(bytes.copyOfRange(0, 4), Charsets.US_ASCII)
-        return when (magic) {
-            "LAS1" -> parseLegacy(bytes)
-            "LAV2" -> parseV2(bytes)
+        val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        return when (bb.getInt(offset)) {
+            0x3153414c -> parseLegacy(bytes, bb, offset, length) // LAS1
+            0x3256414c -> parseV2(bytes, bb, offset, length) // LAV2
             else -> null
         }
     }
 
-    private fun parseLegacy(bytes: ByteArray): LasPacket? {
-        if (bytes.size < 27) {
+    private fun parseLegacy(bytes: ByteArray, bb: ByteBuffer, offset: Int, length: Int): LasPacket? {
+        if (length < 27) {
             return null
         }
 
-        val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val protocolVersion = bb.get(4).toInt() and 0xFF
-        val flags = bb.get(5).toInt() and 0xFF
-        val sequence = bb.getInt(6)
-        val timestampMs = bb.getLong(10)
-        val sampleRate = bb.getInt(18)
-        val channels = bb.get(22).toInt() and 0xFF
-        val framesPerPacket = bb.getShort(23).toInt() and 0xFFFF
-        val payloadLen = bb.getShort(25).toInt() and 0xFFFF
-        if (bytes.size != 27 + payloadLen) {
+        val protocolVersion = bb.get(offset + 4).toInt() and 0xFF
+        val flags = bb.get(offset + 5).toInt() and 0xFF
+        val sequence = bb.getInt(offset + 6)
+        val timestampMs = bb.getLong(offset + 10)
+        val sampleRate = bb.getInt(offset + 18)
+        val channels = bb.get(offset + 22).toInt() and 0xFF
+        val framesPerPacket = bb.getShort(offset + 23).toInt() and 0xFFFF
+        val payloadLen = bb.getShort(offset + 25).toInt() and 0xFFFF
+        if (length != 27 + payloadLen) {
             return null
         }
 
-        val payload = bytes.copyOfRange(27, bytes.size)
+        val payload = bytes.copyOfRange(offset + 27, offset + length)
         return LasPacket(
             protocolVersion = protocolVersion,
             headerSize = 27,
@@ -82,36 +83,35 @@ object LasPacketParser {
         )
     }
 
-    private fun parseV2(bytes: ByteArray): LasPacket? {
-        if (bytes.size < 33) {
+    private fun parseV2(bytes: ByteArray, bb: ByteBuffer, offset: Int, length: Int): LasPacket? {
+        if (length < 33) {
             return null
         }
-        val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        val protocolVersion = bb.get(4).toInt() and 0xFF
+        val protocolVersion = bb.get(offset + 4).toInt() and 0xFF
         if (protocolVersion != 2) {
             return null
         }
-        val headerSize = bb.getShort(5).toInt() and 0xFFFF
-        if (headerSize < 33 || bytes.size < headerSize) {
+        val headerSize = bb.getShort(offset + 5).toInt() and 0xFFFF
+        if (headerSize < 33 || length < headerSize) {
             return null
         }
-        val flags = bb.getShort(7).toInt() and 0xFFFF
-        val sequence = bb.getInt(9)
-        val timestampMs = bb.getLong(13)
-        val codec = bb.get(21).toInt() and 0xFF
+        val flags = bb.getShort(offset + 7).toInt() and 0xFFFF
+        val sequence = bb.getInt(offset + 9)
+        val timestampMs = bb.getLong(offset + 13)
+        val codec = bb.get(offset + 21).toInt() and 0xFF
         if (codec != LasPacket.CODEC_PCM16 && codec != LasPacket.CODEC_OPUS_EXPERIMENTAL) {
             return null
         }
-        val channels = bb.get(22).toInt() and 0xFF
-        val sampleRate = bb.getInt(23)
-        val frameDurationMs = bb.getShort(27).toInt() and 0xFFFF
-        val payloadLen = bb.getShort(29).toInt() and 0xFFFF
-        if (bytes.size != headerSize + payloadLen) {
+        val channels = bb.get(offset + 22).toInt() and 0xFF
+        val sampleRate = bb.getInt(offset + 23)
+        val frameDurationMs = bb.getShort(offset + 27).toInt() and 0xFFFF
+        val payloadLen = bb.getShort(offset + 29).toInt() and 0xFFFF
+        if (length != headerSize + payloadLen) {
             return null
         }
         val framesPerPacket =
             if (sampleRate <= 0 || frameDurationMs <= 0) 0 else sampleRate * frameDurationMs / 1000
-        val payload = bytes.copyOfRange(headerSize, bytes.size)
+        val payload = bytes.copyOfRange(offset + headerSize, offset + length)
         return LasPacket(
             protocolVersion = protocolVersion,
             headerSize = headerSize,

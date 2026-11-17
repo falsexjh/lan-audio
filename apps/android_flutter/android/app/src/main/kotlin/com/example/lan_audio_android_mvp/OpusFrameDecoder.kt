@@ -1,6 +1,7 @@
 package com.example.lan_audio_android_mvp
 
 import android.util.Log
+import android.os.SystemClock
 
 class OpusFrameDecoder {
     private val logTag = "lan_audio_opus"
@@ -8,6 +9,7 @@ class OpusFrameDecoder {
     private var sampleRate: Int = 0
     private var channels: Int = 0
     private var decodeFailures = 0L
+    private val pcmLevelGate = IntervalGate(250L)
 
     @Synchronized
     fun decode(packet: LasPacket): ByteArray? {
@@ -48,6 +50,8 @@ class OpusFrameDecoder {
             }
         }
 
+        // Silence diagnostics do not need a second full PCM scan per packet.
+        if (!pcmLevelGate.shouldRun(SystemClock.elapsedRealtime())) return normalized
         val peak = OpusNativeDecoder.pcmPeak(normalized)
         if (peak == 0) {
             decodeFailures += 1
@@ -68,6 +72,7 @@ class OpusFrameDecoder {
         sampleRate = 0
         channels = 0
         decodeFailures = 0
+        pcmLevelGate.reset()
     }
 
     private fun ensureDecoder(nextSampleRate: Int, nextChannels: Int): OpusNativeDecoder {

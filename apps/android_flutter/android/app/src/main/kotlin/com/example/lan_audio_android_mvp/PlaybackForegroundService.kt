@@ -16,6 +16,8 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.os.Handler
+import android.os.Looper
 import android.net.wifi.WifiManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -45,11 +47,17 @@ class PlaybackForegroundService : MediaSessionService() {
         fun getService(): PlaybackForegroundService? = service
     }
 
-    private val storeListener: (PlaybackSnapshot) -> Unit = { snapshot ->
-        updateMediaSession(snapshot)
-        updateNotification(snapshot)
-        maybeNotifyPowerSavingRestriction(snapshot)
-    }
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val serviceUpdates = LatestValueDispatcher(
+        initial = PlaybackSnapshot(), intervalMs = 1000L,
+        clockMs = SystemClock::elapsedRealtime,
+        post = { task, delay -> mainHandler.postDelayed(task, delay); Unit },
+        cancel = { task -> mainHandler.removeCallbacks(task) },
+        urgent = ::playbackPresentationChanged,
+    )
+    private var lastMediaState: Int? = null
+    private var lastMediaTarget: String? = null
+    private val storeListener: (PlaybackSnapshot) -> Unit = { serviceUpdates.publish(it) }
 
     override fun onCreate() {
         super.onCreate()
@@ -72,6 +80,11 @@ class PlaybackForegroundService : MediaSessionService() {
                 override fun onPause() = handlePlayPauseAction()
                 override fun onStop() = stopFromMediaAction("media_session_stop")
             })
+        }
+        serviceUpdates.attach { snapshot ->
+            updateMediaSession(snapshot)
+            updateNotification(snapshot)
+            maybeNotifyPowerSavingRestriction(snapshot)
         }
         stateStore.addListener(storeListener)
         stateStore.set(
@@ -247,6 +260,7 @@ class PlaybackForegroundService : MediaSessionService() {
             "onDestroy serviceState=${snapshot.serviceState} connectionState=${snapshot.connectionState} playbackState=${snapshot.playbackState}"
         )
         stateStore.removeListener(storeListener)
+        serviceUpdates.detach()
         if (!explicitStopRequested && shouldRestoreAfterDestroy(snapshot)) {
             schedulePlaybackRestore("service_destroyed")
         }
@@ -419,22 +433,25 @@ class PlaybackForegroundService : MediaSessionService() {
             snapshot.playbackState == "playing" -> PlaybackStateCompat.STATE_PLAYING
             else -> PlaybackStateCompat.STATE_STOPPED
         }
-        compat.setPlaybackState(
-            PlaybackStateCompat.Builder()
-                .setActions(PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_STOP)
-                .setState(mappedState, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
-                .build()
-        )
-        compat.setMetadata(
-            MediaMetadataCompat.Builder()
-                .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "LAN Audio")
-                .putString(
-                    MediaMetadataCompat.METADATA_KEY_ARTIST,
-                    snapshot.targetHost ?: snapshot.targetName ?: "unknown",
-                )
-                .build()
-        )
-        compat.isActive = true
+        if (mappedState != lastMediaState) {
+            compat.setPlaybackState(
+                PlaybackStateCompat.Builder()
+                    .setActions(PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_STOP)
+                    .setState(mappedState, PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                    .build()
+            )
+            lastMediaState = mappedState
+        }
+        val target = snapshot.targetHost ?: snapshot.targetName ?: "unknown"
+        if (target != lastMediaTarget) {
+            compat.setMetadata(
+                MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "LAN Audio")
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, target)
+                    .build()
+            )
+            lastMediaTarget = target
+        }
     }
 
     private fun ensureNotificationChannel() {

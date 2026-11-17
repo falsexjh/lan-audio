@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../services/mic_capture_service.dart';
 import '../../widgets/capsule_button.dart';
 import '../audio_console_theme.dart';
+import '../widgets/debug_info_card.dart';
 
 /// Settings tab page (index 2) with grouped card layout.
 ///
@@ -51,7 +52,8 @@ class SettingsPage extends StatelessWidget {
     this.audioFocusExclusive = false,
     this.onAudioFocusChanged,
     // Debug
-    required this.debugData,
+    this.debugData = const {},
+    this.debugDataBuilder,
   });
 
   final bool isZh;
@@ -71,7 +73,7 @@ class SettingsPage extends StatelessWidget {
   final int eqMidDb;
   final int eqHighDb;
   final void Function({bool? enabled, int? lowDb, int? midDb, int? highDb})
-      onSetEq;
+  onSetEq;
   final void Function(String preset) onApplyEqPreset;
 
   // ── Mic ──
@@ -99,6 +101,7 @@ class SettingsPage extends StatelessWidget {
   // ── Debug ──
   /// Key-value pairs for the debug info card.
   final Map<String, String> debugData;
+  final ValueGetter<Map<String, String>>? debugDataBuilder;
 
   String tr(String zh, String en) => isZh ? zh : en;
 
@@ -221,10 +224,7 @@ class SettingsPage extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              tr('自定义缓冲', 'Custom Buffer'),
-              style: AudioConsoleType.body(),
-            ),
+            Text(tr('自定义缓冲', 'Custom Buffer'), style: AudioConsoleType.body()),
             Switch(
               value: customBufferEnabled,
               onChanged: (enabled) {
@@ -255,8 +255,9 @@ class SettingsPage extends StatelessWidget {
                         thumbColor: AudioConsoleColors.teal,
                         overlayColor: AudioConsoleColors.tealDim,
                         trackHeight: 4,
-                        thumbShape:
-                            const RoundSliderThumbShape(enabledThumbRadius: 7),
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 7,
+                        ),
                       ),
                       child: Slider(
                         min: 10,
@@ -275,12 +276,14 @@ class SettingsPage extends StatelessWidget {
                         Text(
                           '10ms',
                           style: AudioConsoleType.monoMeta(
-                              color: AudioConsoleColors.text3),
+                            color: AudioConsoleColors.text3,
+                          ),
                         ),
                         Text(
                           '200ms',
                           style: AudioConsoleType.monoMeta(
-                              color: AudioConsoleColors.text3),
+                            color: AudioConsoleColors.text3,
+                          ),
                         ),
                       ],
                     ),
@@ -302,10 +305,7 @@ class SettingsPage extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              tr('均衡器', 'Equalizer'),
-              style: AudioConsoleType.body(),
-            ),
+            Text(tr('均衡器', 'Equalizer'), style: AudioConsoleType.body()),
             Switch(
               value: eqEnabled,
               onChanged: (value) => onSetEq(enabled: value),
@@ -564,10 +564,7 @@ class SettingsPage extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              tr('自动连接', 'Auto Connect'),
-              style: AudioConsoleType.body(),
-            ),
+            Text(tr('自动连接', 'Auto Connect'), style: AudioConsoleType.body()),
             Switch(
               value: autoConnectEnabled,
               onChanged: onAutoConnectChanged,
@@ -630,77 +627,11 @@ class SettingsPage extends StatelessWidget {
   }
 
   /// Builds the expandable debug info card with monospace key-value pairs.
-  Widget _buildDebugInfoCard() {
-    return Container(
-      decoration: BoxDecoration(
-        color: AudioConsoleColors.bg2,
-        borderRadius: AudioConsoleRadius.card,
-      ),
-      child: Theme(
-        data: ThemeData(
-          dividerColor: Colors.transparent,
-          splashColor: Colors.transparent,
-          highlightColor: Colors.transparent,
-        ),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(
-            horizontal: AudioConsoleSpacing.md,
-          ),
-          childrenPadding: const EdgeInsets.fromLTRB(
-            AudioConsoleSpacing.md,
-            0,
-            AudioConsoleSpacing.md,
-            AudioConsoleSpacing.md,
-          ),
-          title: Text(
-            tr('调试信息', 'Debug Info'),
-            style: AudioConsoleType.body(color: AudioConsoleColors.text2),
-          ),
-          iconColor: AudioConsoleColors.text2,
-          collapsedIconColor: AudioConsoleColors.text2,
-          children: [
-            ...debugData.entries.map(
-              (entry) => Padding(
-                padding: const EdgeInsets.only(bottom: AudioConsoleSpacing.xxs),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      width: 120,
-                      child: Text(
-                        entry.key,
-                        style: TextStyle(
-                          fontFamily: AudioConsoleType.monoFamily,
-                          fontSize: 12,
-                          color: AudioConsoleColors.text2,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: Text(
-                        entry.value,
-                        style: TextStyle(
-                          fontFamily: AudioConsoleType.monoFamily,
-                          fontSize: 12,
-                          color: AudioConsoleColors.text,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+  Widget _buildDebugInfoCard() =>
+      DebugInfoCard(isZh: isZh, load: debugDataBuilder ?? () => debugData);
 
   /// Builds a settings section with a teal bold header and a dark surface card.
-  Widget _buildSection({
-    required String title,
-    required Widget child,
-  }) {
+  Widget _buildSection({required String title, required Widget child}) {
     return Padding(
       padding: const EdgeInsets.only(bottom: AudioConsoleSpacing.xl),
       child: Column(

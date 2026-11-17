@@ -108,7 +108,6 @@ private:
     std::atomic<int> last_underrun_count_{0};
     std::atomic<int> reopen_attempts_{0};
     std::atomic<uint64_t> callback_count_{0};
-    std::atomic<uint64_t> last_callback_log_ns_{0};
     int sample_rate_ = 48000;
     int channel_count_ = 2;
 

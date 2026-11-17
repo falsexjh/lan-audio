@@ -167,13 +167,15 @@ class StreamSessionManager(
                 )
             }
             val buffer = ByteArray(8192)
+            val packet = DatagramPacket(buffer, buffer.size)
             try {
                 while (running) {
                     try {
-                        val packet = DatagramPacket(buffer, buffer.size)
+                        // receive() changes the packet length. Restore capacity
+                        // so a small datagram cannot truncate the next one.
+                        packet.length = buffer.size
                         socket.receive(packet)
-                        val raw = packet.data.copyOfRange(packet.offset, packet.offset + packet.length)
-                        val las = LasPacketParser.parse(raw) ?: continue
+                        val las = LasPacketParser.parse(packet.data, packet.offset, packet.length) ?: continue
                         callback.onUdpPacket(las)
                     } catch (_: SocketTimeoutException) {
                         continue

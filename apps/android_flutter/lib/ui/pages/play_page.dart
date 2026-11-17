@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 
 import '../audio_console_status.dart';
 import '../audio_console_theme.dart';
@@ -37,6 +38,9 @@ class PlayPage extends StatelessWidget {
     this.lossPercent,
     this.isBluetoothOutput = false,
     this.networkQuality = 0,
+    this.metricsTextListenable,
+    this.networkQualityListenable,
+    this.chartActive = true,
   });
 
   final bool isZh;
@@ -84,12 +88,44 @@ class PlayPage extends StatelessWidget {
 
   /// Network quality indicator: 0=bad, 1=ok, 2=good. Computed from RTT and loss.
   final int networkQuality;
+  final ValueListenable<String>? metricsTextListenable;
+  final ValueListenable<int>? networkQualityListenable;
+  final bool chartActive;
 
   String tr(String zh, String en) => isZh ? zh : en;
 
+  Widget _networkIcon(int quality) => Icon(
+    quality == 2
+        ? Icons.signal_wifi_4_bar
+        : quality == 1
+        ? Icons.network_wifi_3_bar
+        : Icons.signal_wifi_bad,
+    size: 16,
+    color: quality == 2
+        ? AudioConsoleColors.teal
+        : quality == 1
+        ? AudioConsoleColors.amber
+        : AudioConsoleColors.error,
+  );
+
+  String _fallbackMetricsText() => formatMetricsLine(
+    bufferMs: int.tryParse(metricBufferText) ?? 0,
+    underrunCount: int.tryParse(metricUnderrunText) ?? 0,
+    rttMs: tcpRoundTripMs,
+    lossPercent: lossPercent,
+  );
+
+  Widget _metricsLine(String text) => Text(
+    text,
+    key: const ValueKey('playback-metrics'),
+    style: AudioConsoleType.monoMeta(),
+    textAlign: TextAlign.center,
+  );
+
   @override
   Widget build(BuildContext context) {
-    final isPlaying = consoleState == ConsoleUiState.streaming ||
+    final isPlaying =
+        consoleState == ConsoleUiState.streaming ||
         consoleState == ConsoleUiState.buffering;
 
     return Padding(
@@ -108,8 +144,8 @@ class PlayPage extends StatelessWidget {
               color: isPlaying
                   ? AudioConsoleColors.teal
                   : consoleState == ConsoleUiState.error
-                      ? AudioConsoleColors.error
-                      : Colors.transparent,
+                  ? AudioConsoleColors.error
+                  : Colors.transparent,
               border: !isPlaying && consoleState != ConsoleUiState.error
                   ? Border.all(color: AudioConsoleColors.text2, width: 2.0)
                   : null,
@@ -127,8 +163,8 @@ class PlayPage extends StatelessWidget {
               isPlaying
                   ? Icons.volume_up
                   : consoleState == ConsoleUiState.error
-                      ? Icons.error
-                      : Icons.wifi_off,
+                  ? Icons.error
+                  : Icons.wifi_off,
               size: 40,
               color: isPlaying || consoleState == ConsoleUiState.error
                   ? Colors.white
@@ -161,19 +197,13 @@ class PlayPage extends StatelessWidget {
               ),
               if (wsConnected) ...[
                 const SizedBox(width: 6),
-                Icon(
-                  networkQuality == 2
-                      ? Icons.signal_wifi_4_bar
-                      : networkQuality == 1
-                          ? Icons.network_wifi_3_bar
-                          : Icons.signal_wifi_bad,
-                  size: 16,
-                  color: networkQuality == 2
-                      ? AudioConsoleColors.teal
-                      : networkQuality == 1
-                          ? AudioConsoleColors.amber
-                          : AudioConsoleColors.error,
-                ),
+                if (networkQualityListenable == null)
+                  _networkIcon(networkQuality)
+                else
+                  ValueListenableBuilder<int>(
+                    valueListenable: networkQualityListenable!,
+                    builder: (_, quality, __) => _networkIcon(quality),
+                  ),
               ],
             ],
           ),
@@ -202,9 +232,7 @@ class PlayPage extends StatelessWidget {
                 elevation: 0,
               ),
               child: Text(
-                wsConnected
-                    ? tr('断开连接', 'Disconnect')
-                    : tr('连接服务器', 'Connect'),
+                wsConnected ? tr('断开连接', 'Disconnect') : tr('连接服务器', 'Connect'),
                 style: AudioConsoleType.buttonLabel(
                   color: AudioConsoleColors.bg,
                 ),
@@ -225,29 +253,28 @@ class PlayPage extends StatelessWidget {
           DangerActionButton(
             label: tr('停止播放', 'Stop Playback'),
             enabled: wsConnected || !playbackStopped,
-            onPressed: (wsConnected || !playbackStopped) ? onStopPlayback : null,
+            onPressed: (wsConnected || !playbackStopped)
+                ? onStopPlayback
+                : null,
           ),
           const SizedBox(height: 16),
           // Thin divider
-          Divider(
-            color: AudioConsoleColors.border,
-            height: 1,
-          ),
+          Divider(color: AudioConsoleColors.border, height: 1),
           const SizedBox(height: 12),
           // One-line metrics — monospace gray, visible only when connected
           if (wsConnected)
             AnimatedOpacity(
               opacity: wsConnected ? 1.0 : 0.0,
               duration: AudioConsoleMotion.metricFade,
-              child: Text(
-                formatMetricsLine(
-                  bufferMs: int.tryParse(metricBufferText) ?? 0,
-                  underrunCount: int.tryParse(metricUnderrunText) ?? 0,
-                  rttMs: tcpRoundTripMs,
-                  lossPercent: lossPercent,
-                ),
-                style: AudioConsoleType.monoMeta(),
-                textAlign: TextAlign.center,
+              child: RepaintBoundary(
+                child: metricsTextListenable == null
+                    ? _metricsLine(_fallbackMetricsText())
+                    : ValueListenableBuilder<String>(
+                        valueListenable: metricsTextListenable!,
+                        builder: (_, text, __) => _metricsLine(
+                          text.isEmpty ? _fallbackMetricsText() : text,
+                        ),
+                      ),
               ),
             ),
           // Bluetooth latency warning
@@ -270,6 +297,7 @@ class PlayPage extends StatelessWidget {
               currentLatencyMs: currentLatencyMs,
               baselineLatencyMs: baselineLatencyMs,
               isZh: isZh,
+              active: chartActive,
             ),
           const SizedBox(height: 8),
           // Audio quality strip — codec / sample rate / channels.
