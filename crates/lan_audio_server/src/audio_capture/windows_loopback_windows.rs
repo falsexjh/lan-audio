@@ -350,6 +350,8 @@ impl WindowsLoopbackCapture {
                 )));
             }
 
+            // Keep ownership even if initialization fails so stop/retry frees it.
+            self.mix_format_ptr = Some(mix_format_ptr);
             let mix = *mix_format_ptr;
             let sample_rate_hz = mix.nSamplesPerSec;
             let channels = mix.nChannels;
@@ -491,7 +493,6 @@ impl WindowsLoopbackCapture {
             }
             self.audio_client = Some(audio_client);
             self.capture_client = Some(capture_client);
-            self.mix_format_ptr = Some(mix_format_ptr);
             self.state = CaptureSourceState::ClientInitialized;
             Ok(())
         }
