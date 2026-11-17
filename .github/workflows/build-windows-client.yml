@@ -1,9 +1,9 @@
-﻿name: Build Windows Client
+name: Build Windows Client
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, fix/windows-capture-recovery ]
     paths:
       - 'apps/desktop/**'
       - 'crates/**'
